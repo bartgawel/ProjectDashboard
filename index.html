@@ -50,7 +50,7 @@ th{background:#f8f9fb;position:sticky;top:0}
       <button id="refreshBtn">Refresh</button>
     </div>
 
-    <div id="statusBox" class="statusbox">Starting...</div>
+    <div id="statusBox" class="statusbox">Starting...</div><div class="muted" style="margin:0 0 10px 2px">Partner split: <b>UiO = Procurement of R&amp;D services</b>; <b>TQC = all other budget categories</b>. Hover either bar to see TQC, UiO and Total.</div>
 
     <div class="cards">
       <div class="card"><div class="label">Total budget</div><div class="value" id="kBudget">—</div></div>
@@ -77,12 +77,12 @@ th{background:#f8f9fb;position:sticky;top:0}
     </div>
 
     <div class="grid2">
-      <div class="panel"><h2>Budget by work package</h2><div id="budgetWP" class="chart"></div></div>
+      <div class="panel"><h2>Budget by work package — TQC vs UiO</h2><div id="budgetWP" class="chart"></div></div>
       <div class="panel"><h2>Budget by category</h2><div id="budgetCat" class="chart"></div></div>
     </div>
 
     <div class="grid2">
-      <div class="panel"><h2>Annual budget</h2><div id="budgetYear" class="chart"></div></div>
+      <div class="panel"><h2>Annual budget — TQC vs UiO</h2><div id="budgetYear" class="chart"></div></div>
       <div class="panel"><h2>WP progress</h2><div id="progressWP" class="chart"></div></div>
     </div>
 
@@ -334,6 +334,13 @@ function buildModel(settingsRows,planRows,budgetRowsRaw){
     const calc=categories.reduce((s,c)=>s+row[c],0);
     const excelTotal=num(first(r,["Total"],0));
     row.Total=excelTotal!==0?excelTotal:calc;
+
+    // Partner split:
+    // UiO = Procurement of R&D services
+    // TQC = all remaining budget categories
+    row.UiO = row["Procurement of R&D services"] || 0;
+    row.TQC = Math.max(0, row.Total - row.UiO);
+
     row.ActualCost=num(first(r,["ActualCost","Actual Cost","Actual"],0));
     return row;
   });
@@ -346,10 +353,31 @@ function buildModel(settingsRows,planRows,budgetRowsRaw){
   const budgetByYear={};
   const budgetByCategory=Object.fromEntries(categories.map(c=>[c,0]));
 
+  const partnerByWP={};
+  const partnerByYear={};
+  let partnerTotalTQC=0;
+  let partnerTotalUiO=0;
+
   budgetRows.forEach(r=>{
     const wp=r.WP||"Unassigned";
     budgetByWP[wp]=(budgetByWP[wp]||0)+r.Total;
-    if(r.Year) budgetByYear[r.Year]=(budgetByYear[r.Year]||0)+r.Total;
+
+    if(!partnerByWP[wp]) partnerByWP[wp]={TQC:0,UiO:0,Total:0};
+    partnerByWP[wp].TQC += r.TQC || 0;
+    partnerByWP[wp].UiO += r.UiO || 0;
+    partnerByWP[wp].Total += r.Total || 0;
+
+    if(r.Year){
+      budgetByYear[r.Year]=(budgetByYear[r.Year]||0)+r.Total;
+      if(!partnerByYear[r.Year]) partnerByYear[r.Year]={TQC:0,UiO:0,Total:0};
+      partnerByYear[r.Year].TQC += r.TQC || 0;
+      partnerByYear[r.Year].UiO += r.UiO || 0;
+      partnerByYear[r.Year].Total += r.Total || 0;
+    }
+
+    partnerTotalTQC += r.TQC || 0;
+    partnerTotalUiO += r.UiO || 0;
+
     categories.forEach(c=>budgetByCategory[c]+=r[c]);
   });
 
@@ -382,6 +410,8 @@ function buildModel(settingsRows,planRows,budgetRowsRaw){
       reportingDate:excelDate(settings.ReportingDate||settings["Reporting Date"])
     },
     items,wps,tasks,milestones,budgetRows,categories,budgetByWP,budgetByYear,budgetByCategory,
+    partnerByWP,partnerByYear,
+    partnerTotals:{TQC:partnerTotalTQC,UiO:partnerTotalUiO,Total:partnerTotalTQC+partnerTotalUiO},
     kpis:{
       totalBudget,
       totalActual,
@@ -541,15 +571,40 @@ function renderGantt(){
 function renderBudget(){
   const wpNames=Object.keys(MODEL.budgetByWP);
 
-  Plotly.newPlot("budgetWP",[{
-    type:"bar",
-    x:wpNames,
-    y:wpNames.map(w=>MODEL.budgetByWP[w]),
-    text:wpNames.map(w=>money(MODEL.budgetByWP[w])),
-    textposition:"outside"
-  }],{
+  const wpTQC=wpNames.map(w=>MODEL.partnerByWP[w]?MODEL.partnerByWP[w].TQC:0);
+  const wpUiO=wpNames.map(w=>MODEL.partnerByWP[w]?MODEL.partnerByWP[w].UiO:0);
+  const wpTotal=wpNames.map(w=>MODEL.partnerByWP[w]?MODEL.partnerByWP[w].Total:0);
+
+  Plotly.newPlot("budgetWP",[
+    {
+      type:"bar",
+      name:"TQC",
+      x:wpNames,
+      y:wpTQC,
+      customdata:wpNames.map((w,i)=>[wpTQC[i],wpUiO[i],wpTotal[i]]),
+      hovertemplate:
+        "<b>%{x}</b><br>" +
+        "TQC: %{customdata[0]:,.0f}<br>" +
+        "UiO: %{customdata[1]:,.0f}<br>" +
+        "<b>Total: %{customdata[2]:,.0f}</b><extra></extra>"
+    },
+    {
+      type:"bar",
+      name:"UiO",
+      x:wpNames,
+      y:wpUiO,
+      customdata:wpNames.map((w,i)=>[wpTQC[i],wpUiO[i],wpTotal[i]]),
+      hovertemplate:
+        "<b>%{x}</b><br>" +
+        "TQC: %{customdata[0]:,.0f}<br>" +
+        "UiO: %{customdata[1]:,.0f}<br>" +
+        "<b>Total: %{customdata[2]:,.0f}</b><extra></extra>"
+    }
+  ],{
+    barmode:"group",
     margin:{l:65,r:20,t:15,b:45},
-    yaxis:{title:MODEL.settings.currency}
+    yaxis:{title:MODEL.settings.currency},
+    legend:{orientation:"h"}
   },{responsive:true,displaylogo:false});
 
   Plotly.newPlot("budgetCat",[{
@@ -563,16 +618,40 @@ function renderBudget(){
   },{responsive:true,displaylogo:false});
 
   const years=Object.keys(MODEL.budgetByYear).sort();
+  const yearTQC=years.map(y=>MODEL.partnerByYear[y]?MODEL.partnerByYear[y].TQC:0);
+  const yearUiO=years.map(y=>MODEL.partnerByYear[y]?MODEL.partnerByYear[y].UiO:0);
+  const yearTotal=years.map(y=>MODEL.partnerByYear[y]?MODEL.partnerByYear[y].Total:0);
 
-  Plotly.newPlot("budgetYear",[{
-    type:"bar",
-    x:years,
-    y:years.map(y=>MODEL.budgetByYear[y]),
-    text:years.map(y=>money(MODEL.budgetByYear[y])),
-    textposition:"outside"
-  }],{
+  Plotly.newPlot("budgetYear",[
+    {
+      type:"bar",
+      name:"TQC",
+      x:years,
+      y:yearTQC,
+      customdata:years.map((y,i)=>[yearTQC[i],yearUiO[i],yearTotal[i]]),
+      hovertemplate:
+        "<b>%{x}</b><br>" +
+        "TQC: %{customdata[0]:,.0f}<br>" +
+        "UiO: %{customdata[1]:,.0f}<br>" +
+        "<b>Total: %{customdata[2]:,.0f}</b><extra></extra>"
+    },
+    {
+      type:"bar",
+      name:"UiO",
+      x:years,
+      y:yearUiO,
+      customdata:years.map((y,i)=>[yearTQC[i],yearUiO[i],yearTotal[i]]),
+      hovertemplate:
+        "<b>%{x}</b><br>" +
+        "TQC: %{customdata[0]:,.0f}<br>" +
+        "UiO: %{customdata[1]:,.0f}<br>" +
+        "<b>Total: %{customdata[2]:,.0f}</b><extra></extra>"
+    }
+  ],{
+    barmode:"group",
     margin:{l:65,r:20,t:15,b:45},
-    yaxis:{title:MODEL.settings.currency}
+    yaxis:{title:MODEL.settings.currency},
+    legend:{orientation:"h"}
   },{responsive:true,displaylogo:false});
 
   Plotly.newPlot("progressWP",[{
@@ -588,7 +667,6 @@ function renderBudget(){
     yaxis:{autorange:"reversed"}
   },{responsive:true,displaylogo:false});
 }
-
 function renderMilestones(){
   let s=
     "<table><thead><tr>" +
